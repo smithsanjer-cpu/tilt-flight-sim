@@ -83,7 +83,7 @@ const PAL = {
   forest: [52, 98, 58], rock: [138, 114, 90], rockHi: [186, 158, 124], snow: [238, 242, 248],
   road: [160, 150, 138], town: [178, 154, 130]
 };
-let tr = 0, tg = 0, tb = 0;
+let tr = 0, tg = 0, tb = 0, tFade = 1, tNear2 = 0;
 function terrain(wx, wz, near) {
   const s1 = vnoise(wx / 6800, wz / 6800), s2 = vnoise(wx / 2300, wz / 2300);
   const e = s1 * 0.62 + s2 * 0.38;                       // elevation 0..1
@@ -97,15 +97,15 @@ function terrain(wx, wz, near) {
     tg = PAL.shallow[1] + (PAL.sea[1] - PAL.shallow[1]) * a; tg += (PAL.deep[1] - PAL.sea[1]) * b;
     tb = PAL.shallow[2] + (PAL.sea[2] - PAL.shallow[2]) * a; tb += (PAL.deep[2] - PAL.sea[2]) * b;
     if (e > 0.398) { const k = (e - 0.398) / 0.017; tr += (PAL.sand[0] - tr) * k; tg += (PAL.sand[1] - tg) * k; tb += (PAL.sand[2] - tb) * k; }
-    if (near) { const gl = vnoise(wx / 120 + T * 0.9, wz / 120 - T * 0.5); if (gl > 0.8) { const s = (gl - 0.8) * 90; tr += s; tg += s; tb += s * 0.9; } }
+    if (near) { const gl = vnoise(wx / 120 + T * 0.9, wz / 120 - T * 0.5); if (gl > 0.8 && tNear2 > 0.3) { const s = (gl - 0.8) * 90 * tNear2; tr += s; tg += s; tb += s * 0.9; } }
   } else if (e > 0.60) {
     // mountains: shaded rock, snow caps, forested skirts
-    const t = (e - 0.60) / 0.40, det = near ? vnoise(wx / 300, wz / 300) : s2;
+    const t = (e - 0.60) / 0.40, det = s2 + (near && tNear2 > 0.02 ? (vnoise(wx / 300, wz / 300) - 0.5) * tNear2 : 0);
     const sh = 0.72 + 0.5 * det;
     tr = (PAL.rock[0] + (PAL.rockHi[0] - PAL.rock[0]) * det) * sh;
     tg = (PAL.rock[1] + (PAL.rockHi[1] - PAL.rock[1]) * det) * sh;
     tb = (PAL.rock[2] + (PAL.rockHi[2] - PAL.rock[2]) * det) * sh;
-    if (e > 0.74) { let k = (e - 0.74) / 0.26; if (near) k = clamp(k + (vnoise(wx / 520 + 31, wz / 520) - 0.5) * 0.5, 0, 1); tr += (PAL.snow[0] - tr) * k; tg += (PAL.snow[1] - tg) * k; tb += (PAL.snow[2] - tb) * k; }
+    if (e > 0.74) { let k = (e - 0.74) / 0.26; if (tNear2 > 0.05) k = clamp(k + (vnoise(wx / 520 + 31, wz / 520) - 0.5) * 0.5 * tNear2, 0, 1); tr += (PAL.snow[0] - tr) * k; tg += (PAL.snow[1] - tg) * k; tb += (PAL.snow[2] - tb) * k; }
     else if (t < 0.45 && m > 0.42) { const k = (0.45 - t) * 1.6 * m; tr += (PAL.forest[0] - tr) * k; tg += (PAL.forest[1] - tg) * k; tb += (PAL.forest[2] - tb) * k; }
   } else {
     // lowland: painterly patchwork of fields, meadows, forests, roads, towns
@@ -118,18 +118,18 @@ function terrain(wx, wz, near) {
     if (md > 0.58) { const k = (md - 0.58) * 1.8; tr += (PAL.meadow[0] - tr) * k; tg += (PAL.meadow[1] - tg) * k; tb += (PAL.meadow[2] - tb) * k; }
     // crop patchwork
     const cx = Math.floor(wx / 430), cz = Math.floor(wz / 430), h = hash(cx, cz);
-    if (h < 0.62 && m > 0.34) {
+    if (h < 0.62 && m > 0.34 && tFade > 0.04) {
       const f = h < 0.16 ? PAL.crop1 : h < 0.30 ? PAL.crop2 : h < 0.44 ? PAL.crop3 : h < 0.52 ? PAL.plow : null;
-      if (f) { const k = near ? 0.75 + 0.2 * vnoise(wx / 160, wz / 160) : 0.85; tr += (f[0] - tr) * k; tg += (f[1] - tg) * k; tb += (f[2] - tb) * k; }
-      if (near) { // hedgerows along field borders
+      if (f) { const k = (near ? 0.75 + 0.2 * vnoise(wx / 160, wz / 160) : 0.8) * tFade; tr += (f[0] - tr) * k; tg += (f[1] - tg) * k; tb += (f[2] - tb) * k; }
+      if (near && tNear2 > 0.5) { // hedgerows along field borders
         const fx = Math.abs((wx / 430) - cx - 0.5), fz = Math.abs((wz / 430) - cz - 0.5);
         if (fx > 0.472 || fz > 0.472) { tr = tr * 0.45 + 20; tg = tg * 0.5 + 24; tb = tb * 0.5 + 12; }
       }
     }
     // forest blotches with ragged edges
-    const fo = vnoise(wx / 900 + 11, wz / 900 + 11) + (near ? (vnoise(wx / 210 + 3, wz / 210) - 0.5) * 0.22 : 0);
+    const fo = vnoise(wx / 900 + 11, wz / 900 + 11) + (near ? (vnoise(wx / 210 + 3, wz / 210) - 0.5) * 0.22 * tNear2 : 0);
     if (fo > 0.62) { const k = Math.min((fo - 0.62) * 5, 1) * 0.92; tr += (PAL.forest[0] * (0.8 + 0.4 * m) - tr) * k; tg += (PAL.forest[1] * (0.8 + 0.4 * m) - tg) * k; tb += (PAL.forest[2] * (0.8 + 0.4 * m) - tb) * k; }
-    if (near) {
+    if (near && tNear2 > 0.45) {
       // winding roads (ridged noise)
       const r1 = Math.abs(vnoise(wx / 1600 + 7, wz / 1600 + 7) * 2 - 1);
       if (r1 < 0.015) { const k = 1 - r1 / 0.015; tr += (PAL.road[0] - tr) * k; tg += (PAL.road[1] - tg) * k; tb += (PAL.road[2] - tb) * k; }
@@ -146,7 +146,7 @@ function terrain(wx, wz, near) {
 }
 
 /* ---------- ground (mode-7 style) ---------- */
-const GW = 260, GH = 150;
+const GW = 240, GH = 132;
 const gOff = document.createElement('canvas'); gOff.width = GW; gOff.height = GH;
 const gCtx = gOff.getContext('2d'); const gImg = gCtx.createImageData(GW, GH); const g32 = new Uint32Array(gImg.data.buffer);
 function drawGround(cx, hy, f) {
@@ -159,6 +159,8 @@ function drawGround(cx, hy, f) {
     const y = (j + 0.5) / GH * Hr + 1.5; // px below horizon
     let d = f * P.alt / y; if (d > 60000) d = 60000;
     const ft = 1 - Math.exp(-d / fogDist), near = d < 9000;
+    tFade = 1 - clamp((d - 9000) / 9000, 0, 1);
+    tNear2 = clamp((9000 - d) / 5500, 0, 1);
     const lat0 = (X0 - cx) * d / f, stepL = (Xw / GW) * d / f;
     let wx = P.x + Fx * d + Rx * lat0, wz = P.z + Fz * d + Rz * lat0;
     const sx = Rx * stepL, sz = Rz * stepL, row = j * GW;
