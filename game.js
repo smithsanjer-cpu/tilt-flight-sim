@@ -8,7 +8,7 @@ const RAD = Math.PI / 180;
 let W = 0, H = 0, DPR = 1, safeTop = 0, landscape = false;
 let vigG = null;
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
   W = window.innerWidth; H = window.innerHeight;
   cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -145,40 +145,59 @@ function terrain(wx, wz, near) {
   }
 }
 
-/* ---------- ground (mode-7 style) ---------- */
-const GW = 240, GH = 132;
-const gOff = document.createElement('canvas'); gOff.width = GW; gOff.height = GH;
-const gCtx = gOff.getContext('2d'); const gImg = gCtx.createImageData(GW, GH); const g32 = new Uint32Array(gImg.data.buffer);
-function drawGround(cx, hy, f) {
-  const c = WX.cur, Hr = H * 1.7, X0 = cx - W * 1.7, Xw = W * 3.4;
-  const Fx = Math.sin(P.hdg), Fz = Math.cos(P.hdg), Rx = Math.cos(P.hdg), Rz = -Math.sin(P.hdg);
+/* ---------- ground (mode-7 style, roll baked in, adaptive resolution) ---------- */
+let gQ = 2.1;                    // CSS px per ground texel; adapts to measured frame cost
+let GBW = 0, GBH = 0, gPerf = 10;
+const gOff = document.createElement('canvas');
+let gCtx = null, gImg = null, g32 = null;
+function sizeGround() {
+  GBW = clamp(Math.round(W / gQ), 120, 640); GBH = clamp(Math.round(H / gQ), 120, 640);
+  gOff.width = GBW; gOff.height = GBH;
+  gCtx = gOff.getContext('2d'); gImg = gCtx.createImageData(GBW, GBH); g32 = new Uint32Array(gImg.data.buffer);
+}
+function drawGround(cx, cy0, hy, f) {
+  const tw = clamp(Math.round(W / gQ), 120, 640), th = clamp(Math.round(H / gQ), 120, 640);
+  if (tw !== GBW || th !== GBH || !g32) sizeGround();
+  const t0 = performance.now();
+  const c = WX.cur;
   const dim = 1 - c.dark * 0.62, warm = c.warm;
   const mr = dim * (1 + 0.18 * warm), mg = dim * (1 - 0.02 * warm), mb = dim * (1 - 0.28 * warm);
   const fogDist = lerp(26000, 1500, c.fog), hr = c.hor[0], hg = c.hor[1], hb = c.hor[2];
-  for (let j = 0; j < GH; j++) {
-    const y = (j + 0.5) / GH * Hr + 1.5; // px below horizon
-    let d = f * P.alt / y; if (d > 60000) d = 60000;
-    const ft = 1 - Math.exp(-d / fogDist), near = d < 9000;
-    tFade = 1 - clamp((d - 9000) / 9000, 0, 1);
-    tNear2 = clamp((9000 - d) / 5500, 0, 1);
-    const lat0 = (X0 - cx) * d / f, stepL = (Xw / GW) * d / f;
-    let wx = P.x + Fx * d + Rx * lat0, wz = P.z + Fz * d + Rz * lat0;
-    const sx = Rx * stepL, sz = Rz * stepL, row = j * GW;
-    for (let i = 0; i < GW; i++) {
-      terrain(wx, wz, near);
+  const cosR = Math.cos(P.roll), sinR = Math.sin(P.roll);
+  const Fx = Math.sin(P.hdg), Fz = Math.cos(P.hdg), Rx = Math.cos(P.hdg), Rz = -Math.sin(P.hdg);
+  const tx = GBW / W, ty = GBH / H;   // texels per CSS px
+  const hyOff = hy - cy0, alt = Math.max(P.alt, 3), px0 = P.x, pz0 = P.z;
+  for (let j = 0; j < GBH; j++) {
+    const py = (j + 0.5) / ty - cy0;  // CSS offset from screen center
+    const pyS = py * sinR, pyC = py * cosR, row = j * GBW;
+    for (let i = 0; i < GBW; i++) {
+      const px = (i + 0.5) / tx - cx;
+      const yb = px * sinR + pyC - hyOff + 1.0;   // px below the (rolled) horizon
+      if (yb <= 2) { g32[row + i] = 0; continue; }
+      let d = f * alt / yb; if (d > 60000) d = 60000;
+      const ft = 1 - Math.exp(-d / fogDist);
+      tFade = 1 - clamp((d - 9000) / 9000, 0, 1);
+      tNear2 = clamp((9000 - d) / 5500, 0, 1);
+      const lat = (px * cosR - pyS) * d / f;
+      terrain(px0 + Fx * d + Rx * lat, pz0 + Fz * d + Rz * lat, d < 9000);
       const r = (tr * mr) * (1 - ft) + hr * ft, g = (tg * mg) * (1 - ft) + hg * ft, b = (tb * mb) * (1 - ft) + hb * ft;
       g32[row + i] = (255 << 24) | ((b > 255 ? 255 : b) << 16) | ((g > 255 ? 255 : g) << 8) | (r > 255 ? 255 : r);
-      wx += sx; wz += sz;
     }
   }
   gCtx.putImageData(gImg, 0, 0);
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(gOff, X0, hy, Xw, Hr);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(gOff, 0, 0, W, H);
+  // adapt texel density to the measured CPU cost
+  const ms = performance.now() - t0;
+  gPerf = gPerf * 0.9 + ms * 0.1;
+  if (!window.__gFreeze && gPerf > 12 && gQ < 3.4) { gQ = Math.min(3.4, gQ * 1.12); sizeGround(); }
+  else if (!window.__gFreeze && gPerf < 5.5 && gQ > 1.5) { gQ = Math.max(1.5, gQ * 0.92); sizeGround(); }
 }
 
 /* ---------- clouds ---------- */
 function makeCloudSprite(tone) {
-  const s = document.createElement('canvas'); s.width = 320; s.height = 160; const g = s.getContext('2d');
+  const s = document.createElement('canvas'); s.width = 640; s.height = 320; const g = s.getContext('2d'); g.scale(2, 2);
   const puffs = []; let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < 15; i++) {
     const t = i / 14, x = 40 + t * 240 + (rnd() - 0.5) * 34, arch = Math.sin(t * Math.PI);
@@ -533,13 +552,16 @@ function drawWorld(dt) {
   const hy = cy0 + f * Math.tan(clamp(P.pitch, -0.9, 0.9));
   const shx = (Math.sin(T * 41) * P.shake * 2.2), shy = (Math.sin(T * 37 + 1) * P.shake * 2.2);
   ctx.save(); ctx.translate(shx, shy);
-  ctx.translate(cx, cy0); ctx.rotate(-P.roll); ctx.translate(-cx, -cy0);
+  ctx.save(); ctx.translate(cx, cy0); ctx.rotate(-P.roll); ctx.translate(-cx, -cy0);
   drawSky(cx, cy0, hy, f);
   drawRidges(cx, hy, f);
   ctx.fillStyle = `rgb(${WX.cur.hor.map(Math.round)})`; ctx.fillRect(cx - W * 3, hy, W * 6, H * 4);
-  drawGround(cx, hy, f);
+  ctx.restore();
+  drawGround(cx, cy0, hy, f);
+  ctx.save(); ctx.translate(cx, cy0); ctx.rotate(-P.roll); ctx.translate(-cx, -cy0);
   drawClouds(cx, hy, f);
   if (planeKey === 'fighter' && state === 'fly') drawLadder(cx, hy, f);
+  ctx.restore();
   ctx.restore();
   drawRain(dt);
   // painterly finishing: grade + vignette
@@ -741,7 +763,7 @@ function frame(ts) {
   const wi = WEATHERS.findIndex(w => w.id === q.get('weather')); if (wi >= 0) { WX.idx = wi; WX.cur = wxCopy(WEATHERS[wi]); WX.auto = false; }
   resetFlight();
   if (q.get('go')) { input.pad = true; state = 'fly'; $('menu').style.display = 'none'; $('hud').hidden = false; updPadBtn(); }
-  window.__sim = { P: () => P, ctl, input, WX, sensor, get state() { return state; }, setWeather, Snd };
+  window.__sim = { P: () => P, ctl, input, WX, sensor, get state() { return state; }, setWeather, Snd, setGQ: v => { gQ = v; sizeGround(); }, getGQ: () => gQ, groundMs: () => gPerf };
 })();
 requestAnimationFrame(frame);
 document.addEventListener('visibilitychange', () => { if (Snd.ctx) { if (document.hidden) Snd.ctx.suspend(); else Snd.ctx.resume(); } });
