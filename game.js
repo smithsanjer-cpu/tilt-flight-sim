@@ -6,6 +6,7 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 const RAD = Math.PI / 180;
 let W = 0, H = 0, DPR = 1, safeTop = 0, landscape = false;
+let vigG = null;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
@@ -13,6 +14,7 @@ function resize() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   landscape = W > H * 1.15;
   safeTop = $('safe').offsetHeight || 0;
+  cacheVig();
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
@@ -74,21 +76,72 @@ function vnoise(x, y) {
   const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
-const FIELDS = [[98, 152, 72], [124, 170, 82], [172, 172, 90], [82, 130, 68], [146, 116, 76], [110, 160, 90]];
+const PAL = {
+  deep: [22, 62, 108], sea: [42, 104, 156], shallow: [92, 160, 188], sand: [222, 200, 150],
+  grass1: [94, 150, 74], grass2: [132, 174, 90], meadow: [168, 184, 96],
+  crop1: [202, 178, 98], crop2: [176, 140, 80], crop3: [152, 166, 86], plow: [148, 112, 74],
+  forest: [52, 98, 58], rock: [138, 114, 90], rockHi: [186, 158, 124], snow: [238, 242, 248],
+  road: [160, 150, 138], town: [178, 154, 130]
+};
 let tr = 0, tg = 0, tb = 0;
 function terrain(wx, wz, near) {
-  const n1 = vnoise(wx / 4200, wz / 4200) * 0.7 + vnoise(wx / 1400, wz / 1400) * 0.3;
-  const n2 = near ? vnoise(wx / 260, wz / 260) : 0.5;
-  if (n1 < 0.4) { const s = 0.82 + 0.3 * n2; tr = 36 * s; tg = 94 * s; tb = 148 * s; if (n1 > 0.375) { tr = 222; tg = 208; tb = 160; } return; }
-  if (n1 > 0.66) {
-    if (n1 > 0.8) { const s = 0.92 + 0.12 * n2; tr = 236 * s; tg = 241 * s; tb = 246 * s; return; }
-    const s = 0.72 + 0.5 * n2; tr = 118 * s; tg = 104 * s; tb = 92 * s; return;
+  const s1 = vnoise(wx / 6800, wz / 6800), s2 = vnoise(wx / 2300, wz / 2300);
+  const e = s1 * 0.62 + s2 * 0.38;                       // elevation 0..1
+  const m = vnoise(wx / 3100 + 57, wz / 3100 + 57);      // moisture
+  const cvr = WX.cur.cover;
+  if (e < 0.415) {
+    // sea: shallow -> deep gradient, sandy rim, moving sun glint near
+    const dp = (0.415 - e) / 0.415;
+    const a = dp < 0.4 ? dp / 0.4 : 1, b = dp < 0.4 ? 0 : (dp - 0.4) / 0.6;
+    tr = PAL.shallow[0] + (PAL.sea[0] - PAL.shallow[0]) * a; tr += (PAL.deep[0] - PAL.sea[0]) * b;
+    tg = PAL.shallow[1] + (PAL.sea[1] - PAL.shallow[1]) * a; tg += (PAL.deep[1] - PAL.sea[1]) * b;
+    tb = PAL.shallow[2] + (PAL.sea[2] - PAL.shallow[2]) * a; tb += (PAL.deep[2] - PAL.sea[2]) * b;
+    if (e > 0.398) { const k = (e - 0.398) / 0.017; tr += (PAL.sand[0] - tr) * k; tg += (PAL.sand[1] - tg) * k; tb += (PAL.sand[2] - tb) * k; }
+    if (near) { const gl = vnoise(wx / 120 + T * 0.9, wz / 120 - T * 0.5); if (gl > 0.8) { const s = (gl - 0.8) * 90; tr += s; tg += s; tb += s * 0.9; } }
+  } else if (e > 0.60) {
+    // mountains: shaded rock, snow caps, forested skirts
+    const t = (e - 0.60) / 0.40, det = near ? vnoise(wx / 300, wz / 300) : s2;
+    const sh = 0.72 + 0.5 * det;
+    tr = (PAL.rock[0] + (PAL.rockHi[0] - PAL.rock[0]) * det) * sh;
+    tg = (PAL.rock[1] + (PAL.rockHi[1] - PAL.rock[1]) * det) * sh;
+    tb = (PAL.rock[2] + (PAL.rockHi[2] - PAL.rock[2]) * det) * sh;
+    if (e > 0.74) { let k = (e - 0.74) / 0.26; if (near) k = clamp(k + (vnoise(wx / 520 + 31, wz / 520) - 0.5) * 0.5, 0, 1); tr += (PAL.snow[0] - tr) * k; tg += (PAL.snow[1] - tg) * k; tb += (PAL.snow[2] - tb) * k; }
+    else if (t < 0.45 && m > 0.42) { const k = (0.45 - t) * 1.6 * m; tr += (PAL.forest[0] - tr) * k; tg += (PAL.forest[1] - tg) * k; tb += (PAL.forest[2] - tb) * k; }
+  } else {
+    // lowland: painterly patchwork of fields, meadows, forests, roads, towns
+    const g = 0.55 + 0.45 * s2;
+    tr = PAL.grass1[0] + (PAL.grass2[0] - PAL.grass1[0]) * m; tr *= g;
+    tg = PAL.grass1[1] + (PAL.grass2[1] - PAL.grass1[1]) * m; tg *= g;
+    tb = PAL.grass1[2] + (PAL.grass2[2] - PAL.grass1[2]) * m; tb *= g;
+    // meadows wash
+    const md = vnoise(wx / 5200 + 91, wz / 5200 + 91);
+    if (md > 0.58) { const k = (md - 0.58) * 1.8; tr += (PAL.meadow[0] - tr) * k; tg += (PAL.meadow[1] - tg) * k; tb += (PAL.meadow[2] - tb) * k; }
+    // crop patchwork
+    const cx = Math.floor(wx / 430), cz = Math.floor(wz / 430), h = hash(cx, cz);
+    if (h < 0.62 && m > 0.34) {
+      const f = h < 0.16 ? PAL.crop1 : h < 0.30 ? PAL.crop2 : h < 0.44 ? PAL.crop3 : h < 0.52 ? PAL.plow : null;
+      if (f) { const k = near ? 0.75 + 0.2 * vnoise(wx / 160, wz / 160) : 0.85; tr += (f[0] - tr) * k; tg += (f[1] - tg) * k; tb += (f[2] - tb) * k; }
+      if (near) { // hedgerows along field borders
+        const fx = Math.abs((wx / 430) - cx - 0.5), fz = Math.abs((wz / 430) - cz - 0.5);
+        if (fx > 0.472 || fz > 0.472) { tr = tr * 0.45 + 20; tg = tg * 0.5 + 24; tb = tb * 0.5 + 12; }
+      }
+    }
+    // forest blotches with ragged edges
+    const fo = vnoise(wx / 900 + 11, wz / 900 + 11) + (near ? (vnoise(wx / 210 + 3, wz / 210) - 0.5) * 0.22 : 0);
+    if (fo > 0.62) { const k = Math.min((fo - 0.62) * 5, 1) * 0.92; tr += (PAL.forest[0] * (0.8 + 0.4 * m) - tr) * k; tg += (PAL.forest[1] * (0.8 + 0.4 * m) - tg) * k; tb += (PAL.forest[2] * (0.8 + 0.4 * m) - tb) * k; }
+    if (near) {
+      // winding roads (ridged noise)
+      const r1 = Math.abs(vnoise(wx / 1600 + 7, wz / 1600 + 7) * 2 - 1);
+      if (r1 < 0.015) { const k = 1 - r1 / 0.015; tr += (PAL.road[0] - tr) * k; tg += (PAL.road[1] - tg) * k; tb += (PAL.road[2] - tb) * k; }
+      // town speckle where cells say so
+      if (h > 0.9 && hash(Math.floor(wx / 48), Math.floor(wz / 48)) > 0.62) { tr = PAL.town[0] * (0.85 + 0.3 * s2); tg = PAL.town[1] * (0.85 + 0.3 * s2); tb = PAL.town[2] * (0.85 + 0.3 * s2); }
+    }
   }
-  const h = hash(Math.floor(wx / 320), Math.floor(wz / 320)), f = FIELDS[(h * 6) | 0], s = 0.9 + 0.2 * n2;
-  tr = f[0] * s; tg = f[1] * s; tb = f[2] * s;
-  if (near) {
-    const rx = Math.abs(((wx / 2600) % 1 + 1) % 1 - 0.5), rz = Math.abs(((wz / 3100) % 1 + 1) % 1 - 0.5);
-    if (rx < 0.0035 || rz < 0.0035) { tr = 98; tg = 98; tb = 104; }
+  // drifting cloud shadows
+  if (cvr > 0.15) {
+    const sh = vnoise(wx / 2900 + T * 5, wz / 2900 + T * 2);
+    const th = 1.02 - cvr * 0.6;
+    if (sh > th) { const k = Math.min((sh - th) * 4, 1) * 0.38; tr *= 1 - k; tg *= 1 - k; tb *= 1 - k * 0.9; }
   }
 }
 
@@ -101,7 +154,7 @@ function drawGround(cx, hy, f) {
   const Fx = Math.sin(P.hdg), Fz = Math.cos(P.hdg), Rx = Math.cos(P.hdg), Rz = -Math.sin(P.hdg);
   const dim = 1 - c.dark * 0.62, warm = c.warm;
   const mr = dim * (1 + 0.18 * warm), mg = dim * (1 - 0.02 * warm), mb = dim * (1 - 0.28 * warm);
-  const fogDist = lerp(16000, 1600, c.fog), hr = c.hor[0], hg = c.hor[1], hb = c.hor[2];
+  const fogDist = lerp(26000, 1500, c.fog), hr = c.hor[0], hg = c.hor[1], hb = c.hor[2];
   for (let j = 0; j < GH; j++) {
     const y = (j + 0.5) / GH * Hr + 1.5; // px below horizon
     let d = f * P.alt / y; if (d > 60000) d = 60000;
@@ -122,18 +175,28 @@ function drawGround(cx, hy, f) {
 }
 
 /* ---------- clouds ---------- */
-function makeCloudSprite(dark) {
-  const s = document.createElement('canvas'); s.width = 256; s.height = 128; const g = s.getContext('2d');
-  const puffs = [[128, 76, 54], [86, 84, 40], [172, 84, 42], [60, 92, 28], [200, 92, 30], [112, 56, 38], [150, 58, 34]];
-  for (const [x, y, r] of puffs) {
-    const gr = g.createRadialGradient(x, y - r * 0.25, r * 0.1, x, y, r);
-    const a = dark ? [118, 126, 140] : [255, 255, 255], b = dark ? [70, 78, 92] : [214, 226, 240];
-    gr.addColorStop(0, `rgba(${a},0.95)`); gr.addColorStop(0.7, `rgba(${b},0.6)`); gr.addColorStop(1, `rgba(${b},0)`);
-    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+function makeCloudSprite(tone) {
+  const s = document.createElement('canvas'); s.width = 320; s.height = 160; const g = s.getContext('2d');
+  const puffs = []; let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 15; i++) {
+    const t = i / 14, x = 40 + t * 240 + (rnd() - 0.5) * 34, arch = Math.sin(t * Math.PI);
+    puffs.push([x, 108 - arch * 34 - rnd() * 16, 16 + arch * 26 + rnd() * 14]);
   }
+  const paint = (dy, rs, col, a0) => {
+    for (const [x, y, r] of puffs) {
+      const rr = r * rs, gr = g.createRadialGradient(x, y + dy - rr * 0.2, rr * 0.15, x, y + dy, rr);
+      gr.addColorStop(0, `rgba(${col},${a0})`); gr.addColorStop(0.65, `rgba(${col},${(a0 * 0.55).toFixed(3)})`); gr.addColorStop(1, `rgba(${col},0)`);
+      g.fillStyle = gr; g.beginPath(); g.arc(x, y + dy, rr, 0, 7); g.fill();
+    }
+  };
+  paint(30, 1.15, tone.shade.join(','), 0.4);   // flat base
+  paint(14, 1.05, tone.shade.join(','), 0.85);  // shaded body
+  paint(-6, 0.8, tone.lit.join(','), 0.95);     // sunlit tops
   return s;
 }
-const cloudLight = makeCloudSprite(false), cloudDark = makeCloudSprite(true);
+const cloudLight = makeCloudSprite({ lit: [255, 255, 255], shade: [196, 208, 226] });
+const cloudDark = makeCloudSprite({ lit: [150, 158, 172], shade: [70, 78, 96] });
+const cloudWarm = makeCloudSprite({ lit: [255, 228, 190], shade: [214, 156, 126] });
 const CLOUDS = []; const NCLOUD = 70, CR = 12000;
 for (let i = 0; i < NCLOUD; i++) CLOUDS.push({ x: 0, y: 0, z: 0, s: 0, f: 0, init: false, order: i / NCLOUD });
 function placeCloud(c, ahead) {
@@ -155,15 +218,25 @@ function drawClouds(cx, hy, f) {
     c._fwd = fwd; c._lat = dx * Rx + dz * Rz; list.push(c);
   }
   list.sort((a, b) => b._fwd - a._fwd);
-  const dark = WX.cur.dark;
+  const dark = WX.cur.dark, baseSpr = WX.cur.warm > 0.5 ? cloudWarm : cloudLight;
   for (const c of list) {
     const sc = f / c._fwd, r = c.s * sc, sx = cx + c._lat * sc, sy = hy - (c.y - P.alt) * sc;
     if (r < 2 || sx < -r * 2 - W || sx > W * 2 + r * 2 || sy < -r * 2 - H * 1.5 || sy > H * 3) continue;
     let a = clamp((CR - c._fwd) / 3500, 0, 1) * clamp(c._fwd / (c.s * 1.2), 0, 1);
     if (a <= 0.01) continue;
     const w = r * 2.6, h = w * 0.5;
-    ctx.globalAlpha = a * 0.95; ctx.drawImage(cloudLight, sx - w / 2, sy - h * 0.62, w, h);
+    ctx.globalAlpha = a * 0.95; ctx.drawImage(baseSpr, sx - w / 2, sy - h * 0.62, w, h);
     if (dark > 0.05) { ctx.globalAlpha = a * dark * 1.1 > 1 ? 1 : a * dark * 1.1; ctx.drawImage(cloudDark, sx - w / 2, sy - h * 0.62, w, h); }
+  }
+  // distant stratus deck hugging the horizon
+  const deck = clamp((cover - 0.35) / 0.65, 0, 1) * clamp(1 - WX.cur.fog * 0.7, 0, 1);
+  if (deck > 0.02) {
+    for (let i = 0; i < 4; i++) {
+      const off = ((i * 0.618 + P.hdg * 0.35) % 1.4 + 1.4) % 1.4 - 0.2;
+      const w = W * (1.1 + i * 0.28), h = 24 + i * 15;
+      ctx.globalAlpha = deck * (0.34 - i * 0.05);
+      ctx.drawImage(baseSpr, W * off, hy - 26 + i * 13 - w * 0, w, h);
+    }
   }
   ctx.globalAlpha = 1;
 }
@@ -171,14 +244,28 @@ function drawClouds(cx, hy, f) {
 /* ---------- audio ---------- */
 const Snd = {
   ctx: null, muted: false, eng: null,
+  unlock() {
+    // iOS suspends the AudioContext after permission dialogs / backgrounding; resume on every gesture.
+    const c = this.ctx; if (!c) return;
+    if (c.state !== 'running') { try { const p = c.resume(); if (p && p.catch) p.catch(() => { }); } catch (_) { } }
+  },
   init() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
+    if (this.ctx) { this.unlock(); return; }
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
     this.ctx = new AC(); const a = this.ctx;
-    this.master = a.createGain(); this.master.gain.value = this.muted ? 0 : 0.8; this.master.connect(a.destination);
+    this.master = a.createGain(); this.master.gain.value = this.muted ? 0 : 0.9; this.master.connect(a.destination);
     const nb = a.createBuffer(1, a.sampleRate * 2, a.sampleRate), d = nb.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     this.noiseBuf = nb; this.build(planeKey);
+    this.unlock();
+    if (!this._hooked) {
+      this._hooked = true;
+      const kick = () => this.unlock();
+      window.addEventListener('pointerdown', kick, { passive: true });
+      window.addEventListener('touchend', kick, { passive: true });
+      window.addEventListener('keydown', kick);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
+    }
   },
   noise() { const s = this.ctx.createBufferSource(); s.buffer = this.noiseBuf; s.loop = true; s.start(); return s; },
   build(key) {
@@ -188,7 +275,7 @@ const Snd = {
     const oscs = [], e = { out, key, oscs };
     const o1 = a.createOscillator(); o1.type = 'sawtooth'; const o2 = a.createOscillator(); o2.type = key === 'passenger' ? 'sine' : 'square';
     const lp = a.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
-    const g1 = a.createGain(), g2 = a.createGain(); g1.gain.value = 0.35; g2.gain.value = key === 'passenger' ? 0.05 : 0.14;
+    const g1 = a.createGain(), g2 = a.createGain(); g1.gain.value = 0.35; g2.gain.value = key === 'passenger' ? 0.16 : 0.18;
     o1.connect(g1).connect(lp); o2.connect(g2).connect(lp);
     const am = a.createGain(); am.gain.value = 1; lp.connect(am); am.connect(out);
     let lfo = null;
@@ -205,21 +292,21 @@ const Snd = {
     const e = this.eng; if (!e || !this.ctx) return; const t = this.ctx.currentTime, S = 0.08;
     const sp = clamp(spd / vmax, 0, 1);
     if (e.key === 'cargo') {
-      e.o1.frequency.setTargetAtTime(36 + thr * 56, t, S); e.o2.frequency.setTargetAtTime((36 + thr * 56) * 2.01, t, S);
-      e.lp.frequency.setTargetAtTime(380 + thr * 900, t, S); e.lfo.frequency.setTargetAtTime(13 + thr * 28, t, S);
-      e.ng.gain.setTargetAtTime(0.05 + 0.22 * thr, t, S); e.nf.frequency.setTargetAtTime(500 + thr * 900, t, S);
-      e.out.gain.setTargetAtTime(0.5 + 0.35 * thr, t, S);
+      e.o1.frequency.setTargetAtTime(55 + thr * 78, t, S); e.o2.frequency.setTargetAtTime((55 + thr * 78) * 2.01, t, S);
+      e.lp.frequency.setTargetAtTime(520 + thr * 1150, t, S); e.lfo.frequency.setTargetAtTime(16 + thr * 32, t, S);
+      e.ng.gain.setTargetAtTime(0.07 + 0.26 * thr, t, S); e.nf.frequency.setTargetAtTime(700 + thr * 1200, t, S);
+      e.out.gain.setTargetAtTime(0.55 + 0.35 * thr, t, S);
     } else if (e.key === 'passenger') {
-      e.o1.frequency.setTargetAtTime(55 + thr * 50, t, S); e.o2.frequency.setTargetAtTime(260 + thr * 700, t, S);
-      e.lp.frequency.setTargetAtTime(320, t, S);
-      e.ng.gain.setTargetAtTime(0.12 + 0.55 * thr, t, S); e.nf.frequency.setTargetAtTime(600 + thr * 2200, t, S);
-      e.out.gain.setTargetAtTime(0.45 + 0.3 * thr, t, S);
+      e.o1.frequency.setTargetAtTime(92 + thr * 76, t, S); e.o2.frequency.setTargetAtTime(300 + thr * 780, t, S);
+      e.lp.frequency.setTargetAtTime(480, t, S);
+      e.ng.gain.setTargetAtTime(0.16 + 0.6 * thr, t, S); e.nf.frequency.setTargetAtTime(900 + thr * 2600, t, S);
+      e.out.gain.setTargetAtTime(0.5 + 0.32 * thr, t, S);
     } else {
-      e.o1.frequency.setTargetAtTime(80 + thr * 120, t, S); e.o2.frequency.setTargetAtTime(600 + thr * 900, t, S);
-      e.lp.frequency.setTargetAtTime(500 + thr * 700, t, S);
+      e.o1.frequency.setTargetAtTime(95 + thr * 130, t, S); e.o2.frequency.setTargetAtTime(650 + thr * 950, t, S);
+      e.lp.frequency.setTargetAtTime(700 + thr * 900, t, S);
       const ab = thr > 0.85 ? (thr - 0.85) / 0.15 : 0;
-      e.ng.gain.setTargetAtTime(0.2 + 0.5 * thr + 0.35 * ab, t, S); e.nf.frequency.setTargetAtTime(700 + thr * 2600, t, S);
-      e.out.gain.setTargetAtTime(0.5 + 0.4 * thr, t, S);
+      e.ng.gain.setTargetAtTime(0.24 + 0.5 * thr + 0.35 * ab, t, S); e.nf.frequency.setTargetAtTime(900 + thr * 2800, t, S);
+      e.out.gain.setTargetAtTime(0.55 + 0.4 * thr, t, S);
     }
     e.wg.gain.setTargetAtTime(0.02 + 0.16 * sp * sp, t, 0.2); e.wf.frequency.setTargetAtTime(700 + sp * 1800, t, 0.2);
   },
@@ -295,6 +382,7 @@ async function startFlight() {
   Snd.init(); Snd.build(planeKey);
   $('start').disabled = true;
   await requestMotion();
+  Snd.init(); Snd.unlock(); // iOS suspends audio during the motion-permission dialog
   $('start').disabled = false;
   resetFlight(); state = 'fly';
   $('menu').classList.add('hide'); $('hud').hidden = false; updPadBtn();
@@ -373,10 +461,45 @@ function update(dt) {
 
 /* ---------- rendering ---------- */
 const rain = []; for (let i = 0; i < 160; i++) rain.push({ x: Math.random(), y: Math.random(), l: 0.4 + Math.random() * 0.6 });
+/* distant painterly ridge lines (screen-space, bearing-based) */
+const RIDGES = [
+  { amp: 0.055, freq: 1.6, seed: 3.7, col: [112, 126, 150], haze: 0.84 },
+  { amp: 0.095, freq: 2.6, seed: 9.2, col: [96, 108, 130], haze: 0.62 },
+  { amp: 0.150, freq: 4.2, seed: 15.9, col: [80, 90, 108], haze: 0.40 }
+];
+function drawRidges(cx, hy, f) {
+  const c = WX.cur, vis = clamp(1 - c.fog * 1.15, 0, 1); if (vis <= 0.04) return;
+  const hr = c.hor[0], hg = c.hor[1], hb = c.hor[2], dim = 1 - c.dark * 0.45, step = Math.max(10, W / 60);
+  for (const L of RIDGES) {
+    const hz = L.haze + (1 - L.haze) * (1 - vis);
+    let r = (L.col[0] * (1 - hz) + hr * hz) * dim, g = (L.col[1] * (1 - hz) + hg * hz) * dim, b = (L.col[2] * (1 - hz) + hb * hz) * dim;
+    const wk = c.warm * (1 - hz) * 0.5; r += 42 * wk; g += 6 * wk; b -= 22 * wk;
+    ctx.fillStyle = `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${vis})`;
+    ctx.beginPath(); ctx.moveTo(-W * 0.3, hy + 4);
+    for (let sx = -W * 0.3; sx <= W * 1.3; sx += step) {
+      const ang = P.hdg + (sx - cx) / f;
+      let h = vnoise(ang * L.freq, L.seed); h = 1 - Math.abs(h * 2 - 1);
+      h = h * h * (0.5 + 0.5 * vnoise(ang * L.freq * 0.31, L.seed + 40));
+      ctx.lineTo(sx, hy - h * L.amp * f);
+    }
+    ctx.lineTo(W * 1.3, hy + 4); ctx.closePath(); ctx.fill();
+  }
+}
+/* fine grain kills gradient banding and adds a painted tooth */
+const grain = (() => { const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d'); const im = g.createImageData(128, 128); for (let i = 0; i < im.data.length; i += 4) { const v = 118 + (Math.random() * 20 | 0); im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; } g.putImageData(im, 0, 0); return c; })();
+function cacheVig() { vigG = ctx.createRadialGradient(W / 2, H * 0.45, Math.min(W, H) * 0.42, W / 2, H * 0.55, Math.max(W, H) * 0.78); vigG.addColorStop(0, 'rgba(8,12,22,0)'); vigG.addColorStop(1, 'rgba(8,12,22,0.32)'); }
+
 function drawSky(cx, cy0, hy, f) {
   const c = WX.cur, top = `rgb(${c.top.map(Math.round)})`, hor = `rgb(${c.hor.map(Math.round)})`;
   const gr = ctx.createLinearGradient(0, hy - H * 1.1, 0, hy); gr.addColorStop(0, top); gr.addColorStop(1, hor);
   ctx.fillStyle = gr; ctx.fillRect(cx - W * 3, hy - H * 4, W * 6, H * 4 + 1);
+  ctx.save(); ctx.globalAlpha = 0.05; ctx.globalCompositeOperation = 'overlay';
+  ctx.drawImage(grain, cx - W * 3, hy - H * 4, W * 6, H * 4 + 1); ctx.restore();
+  // soft haze band melting into the horizon
+  const hb2 = ctx.createLinearGradient(0, hy - H * 0.14, 0, hy);
+  hb2.addColorStop(0, `rgba(${Math.round(c.hor[0])},${Math.round(c.hor[1])},${Math.round(c.hor[2])},0)`);
+  hb2.addColorStop(1, `rgba(${Math.round(c.hor[0])},${Math.round(c.hor[1])},${Math.round(c.hor[2])},${0.35 + 0.45 * c.fog})`);
+  ctx.fillStyle = hb2; ctx.fillRect(cx - W * 3, hy - H * 0.14, W * 6, H * 0.14);
   // sun
   const da = ((0.6 - P.hdg + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
   if (Math.abs(da) < 1.3) {
@@ -410,12 +533,18 @@ function drawWorld(dt) {
   ctx.save(); ctx.translate(shx, shy);
   ctx.translate(cx, cy0); ctx.rotate(-P.roll); ctx.translate(-cx, -cy0);
   drawSky(cx, cy0, hy, f);
+  drawRidges(cx, hy, f);
   ctx.fillStyle = `rgb(${WX.cur.hor.map(Math.round)})`; ctx.fillRect(cx - W * 3, hy, W * 6, H * 4);
   drawGround(cx, hy, f);
   drawClouds(cx, hy, f);
   if (planeKey === 'fighter' && state === 'fly') drawLadder(cx, hy, f);
   ctx.restore();
   drawRain(dt);
+  // painterly finishing: grade + vignette
+  const wc = WX.cur;
+  if (wc.warm > 0.03) { ctx.fillStyle = `rgba(255,150,60,${(0.05 * wc.warm).toFixed(3)})`; ctx.fillRect(0, 0, W, H); }
+  if (wc.dark > 0.03) { ctx.fillStyle = `rgba(16,24,46,${(0.09 * wc.dark).toFixed(3)})`; ctx.fillRect(0, 0, W, H); }
+  if (vigG) { ctx.fillStyle = vigG; ctx.fillRect(0, 0, W, H); }
   if (lightning > 0) { ctx.fillStyle = `rgba(230,236,255,${lightning * 0.75})`; ctx.fillRect(0, 0, W, H); }
 }
 function drawLadder(cx, hy, f) {
