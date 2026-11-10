@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b1a2b">
+<title>סימולטור טיסה - Tilt Flight</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+
+<div id="hud" hidden>
+  <button id="bMenu" aria-label="menu">☰</button>
+  <button id="bWeather" aria-label="weather">☁</button>
+  <button id="bSound" aria-label="sound">🔊</button>
+  <button id="bCal" aria-label="calibrate">⌖</button>
+  <button id="bPad" aria-label="touch controls">✥</button>
+</div>
+
+<div id="menu">
+  <div class="panel">
+    <h1>סימולטור טיסה</h1>
+    <p class="sub">הטו את הטלפון כדי לטוס. לחיצה בצד ימין של המסך מגבירה מנוע.</p>
+    <div class="cards" id="cards">
+      <button class="card" data-plane="cargo">
+        <svg viewBox="0 0 100 80"><path fill="currentColor" d="M47 6h6l2 22 38 5v7l-38-2-1 26 11 6v5l-15-3-15 3v-5l11-6-1-26-38 2v-7l38-5z"/></svg>
+        <b>מטען</b><i>Cargo Hauler</i>
+        <span class="st"><em style="width:35%"></em></span>
+      </button>
+      <button class="card sel" data-plane="passenger">
+        <svg viewBox="0 0 100 80"><path fill="currentColor" d="M48 4h4l3 24 38 18v6l-38-9-1 20 9 7v4l-13-3-13 3v-4l9-7-1-20-38 9v-6l38-18z"/></svg>
+        <b>נוסעים</b><i>Airliner</i>
+        <span class="st"><em style="width:62%"></em></span>
+      </button>
+      <button class="card" data-plane="fighter">
+        <svg viewBox="0 0 100 80"><path fill="currentColor" d="M50 3l4 22 36 40v6l-30-8-6 8h-8l-6-8-30 8v-6l36-40z"/></svg>
+        <b>קרב</b><i>Fighter Jet</i>
+        <span class="st"><em style="width:100%"></em></span>
+      </button>
+    </div>
+    <button id="start">התחל לטוס ✈</button>
+    <p id="msg" class="msg"></p>
+    <p class="hint">אייפון: יופיע חלון אישור חיישני תנועה. בלי חיישנים - יופיע ג'ויסטיק על המסך.</p>
+  </div>
+</div>
+<script src="game.js"></script>
+</body>
+</html>
